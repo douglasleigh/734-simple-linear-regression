@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OLED 734 Regression Lab</title>
+<style>
+*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#1c2937;margin:0;background:white}
+main{max-width:820px;margin:auto;padding:18px;display:grid;gap:15px}
+h2{margin:0}.muted{color:#5b6878;font-size:12px;line-height:1.55}
+.model{font:italic 29px Georgia,serif;text-align:center}sub{font-size:.6em}
+.row{display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:center}
+.group{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+button{padding:9px 12px;background:white;border:1px solid #cfd7df;border-radius:8px;cursor:pointer;color:#192738}
+button.active{background:#e6f1ff;border-color:#4289d4;font-weight:bold}
+.panel{border:1px solid #d8e0e8;border-radius:12px;background:#f8fafc;padding:14px}
+svg{width:100%;max-width:680px;display:block;margin:auto;touch-action:none}
+.metricgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.metric{background:white;padding:10px;border:1px solid #d8e0e8;border-radius:9px}
+.metric small{display:block;color:#58677a;margin-bottom:7px}.metric strong{font-size:19px}
+label{font-size:12px;cursor:pointer}input{accent-color:#327fca}.hidden{display:none!important}
+.eq{font:24px Georgia,serif;text-align:center;margin:8px}
+@media(max-width:500px){main{padding:10px}.metricgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style></head><body><main>
+<header><h2>Simple Linear Regression</h2><div class="muted">Observed data, least-squares fitting, predictions and error.</div></header>
+<div class="model">Y<sub>i</sub> = β<sub>0</sub> + β<sub>1</sub>X<sub>i</sub> + ε<sub>i</sub></div>
+<div class="row">
+<div><b>Focus</b><div class="group"><button data-focus="data" class="active">1 · Data</button><button data-focus="line">2 · Line</button><button data-focus="pred">3 · Predictions</button></div></div>
+<div><b>Generate new data</b><div class="group"><button data-shape="positive">↗ Positive</button><button data-shape="negative">↘ Negative</button><button data-shape="flat">→ Flat</button><button data-shape="random">↻ Random</button></div></div>
+</div>
+<section class="panel">
+<div class="row"><b id="stage">Step 1 · Data</b><div class="group"><label><input id="res" type="checkbox" disabled> Residuals</label><label><input id="sq" type="checkbox" disabled> Squared errors</label></div></div>
+<svg id="plot" viewBox="0 0 620 470" aria-label="Interactive regression scatterplot">
+<defs><clipPath id="clip"><rect x="95" y="16" width="400" height="400"/></clipPath></defs>
+<g id="grid"></g><g clip-path="url(#clip)"><g id="squares"></g><g id="fitted"></g><g id="distances"></g><g id="projections"></g><g id="observations"></g></g>
+<g id="r2group" class="hidden"><text x="511" y="382" font-size="12" fill="#58677a">OLS R²</text><text id="r2" x="511" y="408" font-size="21" font-weight="bold" fill="#1c2937"></text></g>
+</svg>
+<div class="muted">Blue = observed values · Orange = OLS line · Green = predictions / orthogonal projections · Pink = distances · Purple = squared distances.</div>
+</section>
+<section id="estimates" class="panel hidden">
+<div><b>Estimated fitted equation</b><div id="eq" class="eq"></div></div>
+<div class="metricgrid">
+<div class="metric"><small>Intercept (b₀)</small><strong id="b0"></strong></div>
+<div class="metric"><small>Slope (b₁)</small><strong id="b1"></strong></div>
+<div class="metric"><small id="sl">Vertical SSE</small><strong id="sse"></strong></div>
+<div id="orthmetric" class="metric hidden"><small>Perpendicular SSD</small><strong id="ssd"></strong></div>
+</div><p id="fitnote" class="muted"></p>
+</section>
+<section class="panel">
+<div class="row"><b>Advanced comparison</b><label><input id="advanced" type="checkbox"> Enable orthogonal regression</label></div>
+<div id="advancebody" class="hidden">
+<div class="group"><button data-method="ols" class="active">Ordinary Least Squares (OLS)</button><button data-method="orth">Orthogonal regression</button></div>
+<p id="methodnote" class="muted"></p>
+<p class="muted"><b>Why no conventional R² for orthogonal regression?</b> Ordinary OLS R² describes explained variation in the outcome under a vertical-error model. Orthogonal regression instead minimizes squared perpendicular distances (SSD). Its slope describes direction and steepness, and SSD measures remaining geometric error; neither is a standardized effect size by itself. Both depend on measurement units and scaling. Vertical SSE and perpendicular SSD assess different fitting criteria, and should not be treated as interchangeable.</p>
+</div></section>
+<p id="caption" class="muted"></p>
+<p class="muted">Drag blue observations to update both models. The orthogonal fit depends on the relative measurement scales; this plot uses equally spaced 0–10 axes.</p>
+</main><script>
+(()=>{"use strict";
+const Q=s=>document.querySelector(s),A=s=>document.querySelectorAll(s),N="http://www.w3.org/2000/svg";
+const sx=x=>95+40*x,sy=y=>416-40*y,C=(x,a,b)=>Math.max(a,Math.min(b,x));
+let pts=[],focus="data",method="ols",shape="positive",drag=null;
+const layers={grid:Q("#grid"),squares:Q("#squares"),fitted:Q("#fitted"),distances:Q("#distances"),projections:Q("#projections"),observations:Q("#observations")};
+function node(tag,attrs,g){const x=document.createElementNS(N,tag);Object.entries(attrs).forEach(([k,v])=>x.setAttribute(k,v));g.appendChild(x);return x}
+function gauss(){return Math.sqrt(-2*Math.log(Math.max(Math.random(),1e-10)))*Math.cos(2*Math.PI*Math.random())}
+function newData(which){shape=which==="random"?["positive","negative","flat"][Math.floor(3*Math.random())]:which;
+const [a,b,s]={positive:[1.5,.7,.8],negative:[8.5,-.7,.8],flat:[5,.02,1.1]}[shape];
+pts=Array.from({length:18},(_,i)=>{const x=.7+(i+.4*Math.random())*8.6/18;return{x,y:C(a+b*x+gauss()*s,.15,9.85)}});draw()}
+function fit(){const n=pts.length,mx=pts.reduce((s,p)=>s+p.x,0)/n,my=pts.reduce((s,p)=>s+p.y,0)/n;
+let xx=0,yy=0,xy=0;pts.forEach(p=>{xx+=(p.x-mx)**2;yy+=(p.y-my)**2;xy+=(p.x-mx)*(p.y-my)});
+const b1=xx>1e-9?xy/xx:0,b0=my-b1*mx;
+const ols={b0,b1,mx,my,dx:1/Math.hypot(1,b1),dy:b1/Math.hypot(1,b1)};
+const l=(xx+yy+Math.sqrt((xx-yy)**2+4*xy*xy))/2;
+let dx,dy;if(Math.abs(xy)>1e-10){dx=xy;dy=l-xx}else if(xx>=yy){dx=1;dy=0}else{dx=0;dy=1}
+const z=Math.hypot(dx,dy)||1;dx/=z;dy/=z;if(dx<0){dx=-dx;dy=-dy}
+const vertical=Math.abs(dx)<1e-8,slope=vertical?null:dy/dx;
+const orth={b0:vertical?null:my-slope*mx,b1:slope,mx,my,dx,dy,vertical};
+const sse=f=>f.vertical?NaN:pts.reduce((s,p)=>s+(p.y-f.b0-f.b1*p.x)**2,0);
+const ssd=f=>pts.reduce((s,p)=>s+((p.x-mx)*(-f.dy)+(p.y-my)*f.dx)**2,0);
+return{ols,orth,sse,ssd,r2:yy>1e-10?1-sse(ols)/yy:1}}
+function proj(p,f){if(method==="ols")return{x:p.x,y:f.b0+f.b1*p.x};const t=(p.x-f.mx)*f.dx+(p.y-f.my)*f.dy;return{x:f.mx+t*f.dx,y:f.my+t*f.dy}}
+function polygon(p,q){const ax=sx(p.x),ay=sy(p.y),bx=sx(q.x),by=sy(q.y),dx=bx-ax,dy=by-ay;if(Math.hypot(dx,dy)<2)return "";
+const vs=[[-dy,dx],[dy,-dx]],sc=v=>Math.min(ax+v[0]-95,495-ax-v[0],ay+v[1]-16,416-ay-v[1],bx+v[0]-95,495-bx-v[0],by+v[1]-16,416-by-v[1]);
+const v=sc(vs[0])>sc(vs[1])?vs[0]:vs[1];
+return[[ax,ay],[bx,by],[bx+v[0],by+v[1]],[ax+v[0],ay+v[1]]].map(x=>x.join(",")).join(" ")}
+function plus(v){return v<0?" − "+Math.abs(v).toFixed(2):" + "+v.toFixed(2)}
+function draw(){const st=fit(),f=method==="ols"?st.ols:st.orth,show=focus!=="data",predict=focus==="pred",res=predict&&Q("#res").checked,squares=predict&&Q("#sq").checked;
+Object.keys(layers).filter(x=>x!=="grid").forEach(x=>layers[x].replaceChildren());
+if(show){let a,b;if(method==="ols"){a={x:0,y:f.b0};b={x:10,y:f.b0+10*f.b1}}else{a={x:f.mx-20*f.dx,y:f.my-20*f.dy};b={x:f.mx+20*f.dx,y:f.my+20*f.dy}}
+node("line",{x1:sx(a.x),y1:sy(a.y),x2:sx(b.x),y2:sy(b.y),stroke:method==="ols"?"#d78022":"#138b68","stroke-width":3},layers.fitted)}
+if(predict)pts.forEach(p=>{const q=proj(p,f);if(squares){const poly=polygon(p,q);if(poly)node("polygon",{points:poly,fill:"#8455ba","fill-opacity":.12,stroke:"#8455ba"},layers.squares)}
+if(res)node("line",{x1:sx(p.x),y1:sy(p.y),x2:sx(q.x),y2:sy(q.y),stroke:"#c44b7b","stroke-width":1.8,"stroke-dasharray":"4 4"},layers.distances);
+node("circle",{cx:sx(q.x),cy:sy(q.y),r:4.5,fill:"#138b68"},layers.projections)});
+pts.forEach((p,i)=>{const c=node("circle",{cx:sx(p.x),cy:sy(p.y),r:6,fill:"#337dca",stroke:"#fff","stroke-width":1.5,"data-i":i},layers.observations);node("title",{},c).textContent=`Case ${i+1}: X=${p.x.toFixed(2)}, Y=${p.y.toFixed(2)}`});
+Q("#estimates").classList.toggle("hidden",!show);
+Q("#eq").textContent=f.vertical?`X = ${f.mx.toFixed(2)}`:`${method==="ols"?"Ŷᵢ":"Y"} = ${f.b0.toFixed(2)}${plus(f.b1)}Xᵢ`;
+Q("#b0").textContent=f.vertical?"N/A":f.b0.toFixed(2);Q("#b1").textContent=f.vertical?"Undefined":f.b1.toFixed(2);
+Q("#sl").textContent=method==="ols"?"Vertical SSE":"Vertical SSE (for this fit)";
+const v=st.sse(f);Q("#sse").textContent=Number.isFinite(v)?v.toFixed(2):"N/A";
+Q("#orthmetric").classList.toggle("hidden",method!=="orth");Q("#ssd").textContent=st.ssd(f).toFixed(2);
+Q("#r2group").classList.toggle("hidden",!show||method!=="ols");Q("#r2").textContent=st.r2.toFixed(3);
+Q("#fitnote").textContent=method==="ols"?"OLS minimizes vertical SSE; conventional R² is shown at the lower-right of the plot.":"Orthogonal regression minimizes perpendicular SSD. Its vertical SSE is reported only as a comparison.";
+Q("#stage").textContent=focus==="data"?"Step 1 · Data":focus==="line"?"Step 2 · Fitted line":method==="ols"?"Step 3 · Predictions":"Step 3 · Perpendicular projections";
+Q("#caption").textContent=focus==="data"?"Only observed data points are shown.":focus==="line"?(method==="ols"?"The orange line minimizes squared vertical errors.":"The green line minimizes squared perpendicular distances."):(method==="ols"?"Green circles are predicted outcomes. Enable residuals and squared errors to explore OLS.":"Green circles are shortest-distance projections, not conventional predicted outcomes.");
+Q("#methodnote").textContent=method==="ols"?"OLS chooses the line minimizing squared vertical outcome errors.":"Orthogonal regression chooses the line minimizing squared perpendicular distances in the displayed units.";
+Q("#res").disabled=!predict;Q("#sq").disabled=!predict;
+A("[data-focus]").forEach(b=>b.classList.toggle("active",b.dataset.focus===focus));
+A("[data-method]").forEach(b=>b.classList.toggle("active",b.dataset.method===method));
+A("[data-shape]").forEach(b=>b.classList.toggle("active",b.dataset.shape===shape))}
+function grid(){for(let k=0;k<=10;k+=2){node("line",{x1:sx(k),y1:16,x2:sx(k),y2:416,stroke:"#dbe3ec"},layers.grid);node("line",{x1:95,y1:sy(k),x2:495,y2:sy(k),stroke:"#dbe3ec"},layers.grid);
+node("text",{x:sx(k),y:436,"text-anchor":"middle",fill:"#58677a","font-size":11},layers.grid).textContent=k;
+node("text",{x:83,y:sy(k)+4,"text-anchor":"end",fill:"#58677a","font-size":11},layers.grid).textContent=k}
+node("rect",{x:95,y:16,width:400,height:400,fill:"none",stroke:"#68798a"},layers.grid);
+node("text",{x:295,y:461,"text-anchor":"middle",fill:"#1c2937","font-size":13},layers.grid).textContent="Predictor (X)";
+node("text",{x:29,y:216,transform:"rotate(-90 29 216)","text-anchor":"middle",fill:"#1c2937","font-size":13},layers.grid).textContent="Outcome (Y)"}
+A("[data-focus]").forEach(b=>b.onclick=()=>{focus=b.dataset.focus;draw()});
+A("[data-shape]").forEach(b=>b.onclick=()=>newData(b.dataset.shape));
+A("[data-method]").forEach(b=>b.onclick=()=>{method=b.dataset.method;draw()});
+Q("#res").onchange=draw;Q("#sq").onchange=draw;
+Q("#advanced").onchange=ev=>{Q("#advancebody").classList.toggle("hidden",!ev.target.checked);if(!ev.target.checked)method="ols";draw()};
+const svg=Q("#plot");function coords(ev){const r=svg.getBoundingClientRect();return{x:(ev.clientX-r.left)*620/r.width,y:(ev.clientY-r.top)*470/r.height}}
+svg.addEventListener("pointerdown",ev=>{const t=ev.target.closest("[data-i]");if(!t)return;drag=+t.dataset.i;svg.setPointerCapture(ev.pointerId);ev.preventDefault()});
+svg.addEventListener("pointermove",ev=>{if(drag===null)return;const p=coords(ev);pts[drag]={x:C((p.x-95)/40,.15,9.85),y:C((416-p.y)/40,.15,9.85)};draw()});
+svg.addEventListener("pointerup",()=>drag=null);svg.addEventListener("pointercancel",()=>drag=null);
+grid();newData("positive");
+})();
+</script></body></html>
